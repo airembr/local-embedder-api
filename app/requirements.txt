@@ -1,0 +1,3 @@
+fastapi
+sentence-transformers==5.1.1
+uvicorn
