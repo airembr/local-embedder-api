@@ -29,6 +29,9 @@ def _convert(bm25):
 async def embeddings(texts: OrderedDict[str, str], bm25: bool = False):
     t = time()
 
+    if not texts:
+        return None
+
     relations = list(texts.keys())
     values = list(texts.values())
 
@@ -36,15 +39,16 @@ async def embeddings(texts: OrderedDict[str, str], bm25: bool = False):
     embeddings = embeddings.tolist()
 
     if embeddings:
-        embeddings = list(zip(relations, embeddings))
+        embeddings = {key: value for key, value in zip(relations, embeddings)}
 
     if bm25:
         bm25 = get_bm25(values)
         bm25 = list(list(_convert(bm25)))
-        bm25 = list(zip(relations, bm25))
+        bm25 = {key: value for key, value in zip(relations, bm25)}
     else:
         bm25 = None
     elapsed = time() - t
 
     logger.info(f"Vectors: {len(embeddings)}, Elapsed time: {elapsed}")
+
     return EmbeddingResponse(sparse=bm25, dense=embeddings, model=model, elapsed=elapsed)
