@@ -1,4 +1,11 @@
 fastapi==0.120.0
-sentence-transformers==5.1.1
 uvicorn==0.38.0
 fastembed==0.7.3
+
+sentence-transformers==5.1.2
+onnxruntime
+transformers
+tokenizers
+huggingface-hub
+numpy
+scikit-learn
