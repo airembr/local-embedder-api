@@ -1,7 +1,6 @@
 import logging
 from collections import OrderedDict
 from time import time
-from typing import List, Dict
 
 from fastapi import APIRouter, Depends
 
@@ -26,7 +25,7 @@ def _convert(bm25):
 
 
 @router.post("/embeddings")
-async def embeddings(texts: OrderedDict[str, str], bm25: bool = False):
+async def embeddings(texts: OrderedDict[str, str], bm25: bool = False, normalize: bool = False):
     t = time()
 
     if not texts:
@@ -34,8 +33,8 @@ async def embeddings(texts: OrderedDict[str, str], bm25: bool = False):
 
     relations = list(texts.keys())
     values = list(texts.values())
-
-    embeddings = get_embeddings(values)
+    print(1, normalize)
+    embeddings = get_embeddings(values, normalize)
     embeddings = embeddings.tolist()
 
     if embeddings:
