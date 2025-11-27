@@ -1,0 +1,7 @@
+sentence-transformers==5.1.2
+onnxruntime
+transformers
+tokenizers
+huggingface-hub
+numpy
+scikit-learn
