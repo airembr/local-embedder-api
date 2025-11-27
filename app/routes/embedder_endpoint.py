@@ -33,7 +33,7 @@ async def embeddings(texts: OrderedDict[str, str], bm25: bool = False, normalize
 
     relations = list(texts.keys())
     values = list(texts.values())
-    print(1, normalize)
+
     embeddings = get_embeddings(values, normalize)
     embeddings = embeddings.tolist()
 
