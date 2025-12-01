@@ -3,7 +3,7 @@ import os
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi import status, HTTPException, Depends
 
-API_TOKEN = os.getenv("API_TOKEN", "super-secret-token")
+API_TOKEN = os.getenv("API_TOKEN", None)
 security = HTTPBearer()
 
 # Dependency that checks the token

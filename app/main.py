@@ -8,10 +8,15 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from app.config import model
+from app.service.security import API_TOKEN
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+if API_TOKEN is None:
+    logger.warning("API_TOKEN is not set.")
+    exit(77)
 
 _local_dir = os.path.dirname(__file__)
 
