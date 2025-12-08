@@ -1,5 +1,7 @@
 import logging
 from collections import OrderedDict
+from typing import List
+
 from time import time
 
 from fastapi import APIRouter, Depends
@@ -51,3 +53,20 @@ async def embeddings(texts: OrderedDict[str, str], bm25: bool = False, normalize
     logger.info(f"Vectors: {len(embeddings)}, Elapsed time: {elapsed}")
 
     return EmbeddingResponse(sparse=bm25, dense=embeddings, model=model, elapsed=elapsed)
+
+
+@router.put("/embeddings")
+async def embeddings(texts: List[str], normalize: bool = False):
+    t = time()
+
+    if not texts:
+        return None
+
+    embeddings = get_embeddings(texts, normalize)
+    embeddings = embeddings.tolist()
+
+    elapsed = time() - t
+
+    logger.info(f"Vectors: {len(embeddings)}, Elapsed time: {elapsed}")
+
+    return EmbeddingResponse(sparse={}, dense=embeddings, model=model, elapsed=elapsed)
