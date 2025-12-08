@@ -56,7 +56,7 @@ async def embeddings(texts: OrderedDict[str, str], bm25: bool = False, normalize
 
 
 @router.put("/embeddings")
-async def embeddings(texts: List[str], normalize: bool = False):
+def list_of_embeddings(texts: List[str], normalize: bool = False):
     t = time()
 
     if not texts:
@@ -69,4 +69,4 @@ async def embeddings(texts: List[str], normalize: bool = False):
 
     logger.info(f"Vectors: {len(embeddings)}, Elapsed time: {elapsed}")
 
-    return EmbeddingResponse(sparse={}, dense=embeddings, model=model, elapsed=elapsed)
+    return embeddings
