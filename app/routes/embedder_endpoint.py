@@ -6,11 +6,11 @@ from time import time
 
 from fastapi import APIRouter, Depends
 
+from airembr.model.system.embedding.embedding import EmbeddingResponse
 from app.config import model
 from app.service.embedder import get_embeddings, get_bm25
 from app.service.security import verify_token
 
-from airembr.sdk.model.embedding.embedding import EmbeddingResponse
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
