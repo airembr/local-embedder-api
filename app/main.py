@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from app.routes import embedder_endpoint
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,9 +21,20 @@ if API_TOKEN is None:
 
 _local_dir = os.path.dirname(__file__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    token_display = f"****{API_TOKEN[-6:]}" if API_TOKEN and len(API_TOKEN) > 6 else "****"
+    logger.info("=== Local Embedder API started ===")
+    logger.info("Embedding model : %s", model)
+    logger.info("API token       : %s", token_display)
+    yield
+
+
 application = FastAPI(
     title="Local Embedder",
-    docs_url='/docs'
+    docs_url='/docs',
+    lifespan=lifespan,
 )
 
 # Mount static files - this is the key addition
