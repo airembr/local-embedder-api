@@ -28,7 +28,7 @@ def _convert(bm25):
         yield item
 
 
-@router.post("/questions")
+@router.post("/classify/questions")
 async def questions(texts: OrderedDict[str, str]):
     t = time()
 
