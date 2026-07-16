@@ -7,8 +7,10 @@ from time import time
 from fastapi import APIRouter, Depends
 
 from airembr.model.system.embedding.embedding import EmbeddingResponse
-from app.config import model
+from app.config import model, question_model_name
+from app.schema.question import QuestionResponse, QuestionResult
 from app.service.embedder import get_embeddings, get_bm25
+from app.service.question_classifier import get_questions
 from app.service.security import verify_token
 
 
@@ -25,6 +27,27 @@ def _convert(bm25):
         item['indices'] = item['indices'].tolist()
         yield item
 
+
+@router.post("/questions")
+async def questions(texts: OrderedDict[str, str]):
+    t = time()
+
+    if not texts:
+        return None
+
+    relations = list(texts.keys())
+    values = list(texts.values())
+
+    predictions = get_questions(values)
+    classifications = {
+        key: QuestionResult(label=label, is_question=label == "question", score=score)
+        for key, (label, score) in zip(relations, predictions)
+    }
+    elapsed = time() - t
+
+    logger.info(f"Classifications: {len(classifications)}, Elapsed time: {elapsed}")
+
+    return QuestionResponse(classifications=classifications, model=question_model_name, elapsed=elapsed)
 
 @router.post("/embeddings")
 async def embeddings(texts: OrderedDict[str, str], bm25: bool = False, normalize: bool = False):
