@@ -1,5 +1,5 @@
 # Build stage
-FROM python:3.11-slim-bullseye AS builder
+FROM --platform=linux/amd64 python:3.11-slim-bullseye AS builder
 
 # Add build argument for GitHub token
 ARG GITHUB_TOKEN
@@ -36,8 +36,8 @@ ENV PATH="$VIRTUAL_ENV/bin:/src:$PATH"
 
 RUN pip install wheel
 
-# Install torch for CPU only
-RUN pip install torch --index-url https://download.pytorch.org/whl/cpu --no-deps
+# Install torch for CPU only (pinned for reproducible builds)
+RUN pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu --no-deps
 
 RUN pip --no-cache-dir --default-timeout=240 install -r app/requirements.txt
 RUN pip --no-cache-dir --default-timeout=240 install -r airembr/sdk/requirements.txt
@@ -45,7 +45,7 @@ RUN pip --no-cache-dir --default-timeout=240 install -r airembr/sdk/requirements
 RUN pip list
 
 # Final stage - token is not carried over to this stage
-FROM python:3.11-slim-bullseye
+FROM --platform=linux/amd64 python:3.11-slim-bullseye
 LABEL maintaner=admin@tracardi.com
 
 RUN pip install --upgrade pip
@@ -71,6 +71,11 @@ ENV IMAGE_TAG=${IMAGE_TAG}
 ENV SERVER_LOGGING_LEVEL=warning
 ENV PYTHONPATH="$VIRTUAL_ENV/bin:/src:$PYTHONPATH"
 ENV PYTHONUNBUFFERED=1
+
+# Cap CPU ISA dispatch to AVX2 to avoid SIGILL from AVX512/VNNI quantized kernels
+# on older K8s nodes that don't support those instructions.
+ENV ATEN_CPU_CAPABILITY=avx2
+ENV DNNL_MAX_CPU_ISA=AVX2
 
 #ENTRYPOINT ["python3", "app/main.py"]
 CMD ["sh", "-c", "uvicorn app.main:application --proxy-headers --host 0.0.0.0 --port 80 --log-level $SERVER_LOGGING_LEVEL"]
