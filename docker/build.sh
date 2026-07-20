@@ -1,0 +1,2 @@
+docker build ../ --rm --no-cache  --progress=plain --build-arg GITHUB_TOKEN=${GITHUB_TOKEN}  -f docker.Dockerfile -t tracardi/airembr-os-hf-768-embedding-api:0.0.3
+#docker push tracardi/airembr-os-hf-768-embedding-api:0.0.3

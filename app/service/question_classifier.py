@@ -8,10 +8,11 @@ from transformers import AutoTokenizer
 from app.config import question_model_dir
 
 _tokenizer = AutoTokenizer.from_pretrained(question_model_dir)
+q_model_path = Path(question_model_dir) / "model_quantized.pt"
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
-    _classifier = torch.load(Path(question_model_dir) / "model_quantized.pt", weights_only=False)
+    _classifier = torch.load(q_model_path, weights_only=False)
 _classifier.eval()
 
 _MAX_LENGTH = 64

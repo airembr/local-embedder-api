@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from app.config import model
+from app.service.question_classifier import q_model_path
 from app.service.security import API_TOKEN
 
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +28,8 @@ async def lifespan(app: FastAPI):
     token_display = f"****{API_TOKEN[-6:]}" if API_TOKEN and len(API_TOKEN) > 6 else "****"
     logger.info("=== Local Embedder API started ===")
     logger.info("Embedding model : %s", model)
+    logger.info("=== Local Question API started ===")
+    logger.info("Q model : %s", q_model_path)
     logger.info("API token       : %s", token_display)
     yield
 
