@@ -82,13 +82,58 @@ const CLUSTERS = [
     { center: new THREE.Vector3(0, 1, 6), color: new THREE.Color(0xffb066), spread: 16 },
 ];
 
+// Shared "forming" cycle: points drift between a diffuse scatter and their
+// clustered target position on this loop. Baked into the shaders as constants
+// (via template literals) and mirrored in JS (for the link endpoints below)
+// so everything stays in lockstep.
+const FORM_CYCLE = 26.0;
+const DUST_PHASE = 0.0;
+const HUB_PHASE = 0.6;
+
 function gaussianJitter(spread) {
     // sum of uniforms approximates a normal distribution, cheap and dependency-free
     return (Math.random() + Math.random() + Math.random() - 1.5) / 1.5 * spread;
 }
 
+function randomScatterPosition() {
+    // Roughly matches the combined bounding extent of all clusters, so the
+    // "unformed" state reads as a diffuse field filling the same volume.
+    return new THREE.Vector3(
+        (Math.random() * 2 - 1) * 28,
+        (Math.random() * 2 - 1) * 22,
+        (Math.random() * 2 - 1) * 19
+    );
+}
+
+function smoothstep01(x) {
+    x = Math.min(1, Math.max(0, x));
+    return x * x * (3 - 2 * x);
+}
+
+function formProgress(t, phase) {
+    const raw = 0.5 + 0.5 * Math.sin(t * (2 * Math.PI / FORM_CYCLE) - Math.PI / 2 + phase);
+    return smoothstep01(raw);
+}
+
+function hubCurrentPosition(hubData, i, t, out) {
+    const progress = formProgress(t, HUB_PHASE);
+    const scatterPos = hubData.scatter[i];
+    const clusterPos = hubData.points[i];
+    const rnd = hubData.randoms[i];
+    out.x = scatterPos.x + (clusterPos.x - scatterPos.x) * progress;
+    out.y = scatterPos.y + (clusterPos.y - scatterPos.y) * progress;
+    out.z = scatterPos.z + (clusterPos.z - scatterPos.z) * progress;
+    // mirrors the shimmer term in buildPointVertexShader() so the hub dots
+    // (rendered on the GPU) and the link endpoints (computed here) match.
+    out.x += Math.sin(t * 0.4 + rnd * Math.PI * 2) * 0.6;
+    out.y += Math.cos(t * 0.35 + rnd * Math.PI * 2) * 0.6;
+    out.z += Math.sin(t * 0.3 + rnd * Math.PI) * 0.5;
+    return out;
+}
+
 function buildDust(count) {
     const positions = new Float32Array(count * 3);
+    const scatter = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const randoms = new Float32Array(count);
     const sizes = new Float32Array(count);
@@ -103,6 +148,11 @@ function buildDust(count) {
         positions[i * 3 + 1] = y;
         positions[i * 3 + 2] = z;
 
+        const scatterPos = randomScatterPosition();
+        scatter[i * 3] = scatterPos.x;
+        scatter[i * 3 + 1] = scatterPos.y;
+        scatter[i * 3 + 2] = scatterPos.z;
+
         const shimmer = 0.75 + Math.random() * 0.5;
         colors[i * 3] = cluster.color.r * shimmer;
         colors[i * 3 + 1] = cluster.color.g * shimmer;
@@ -114,6 +164,7 @@ function buildDust(count) {
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("aScatter", new THREE.BufferAttribute(scatter, 3));
     geometry.setAttribute("aColor", new THREE.BufferAttribute(colors, 3));
     geometry.setAttribute("aRandom", new THREE.BufferAttribute(randoms, 1));
     geometry.setAttribute("aSize", new THREE.BufferAttribute(sizes, 1));
@@ -122,10 +173,12 @@ function buildDust(count) {
 
 function buildHubs(count) {
     const positions = new Float32Array(count * 3);
+    const scatter = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const randoms = new Float32Array(count);
     const sizes = new Float32Array(count);
     const pts = [];
+    const scatterPts = [];
 
     for (let i = 0; i < count; i++) {
         const cluster = CLUSTERS[(Math.random() * CLUSTERS.length) | 0];
@@ -138,6 +191,12 @@ function buildHubs(count) {
         positions[i * 3 + 1] = y;
         positions[i * 3 + 2] = z;
 
+        const scatterPos = randomScatterPosition();
+        scatterPts.push(scatterPos);
+        scatter[i * 3] = scatterPos.x;
+        scatter[i * 3 + 1] = scatterPos.y;
+        scatter[i * 3 + 2] = scatterPos.z;
+
         colors[i * 3] = cluster.color.r;
         colors[i * 3 + 1] = cluster.color.g;
         colors[i * 3 + 2] = cluster.color.b;
@@ -148,55 +207,116 @@ function buildHubs(count) {
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("aScatter", new THREE.BufferAttribute(scatter, 3));
     geometry.setAttribute("aColor", new THREE.BufferAttribute(colors, 3));
     geometry.setAttribute("aRandom", new THREE.BufferAttribute(randoms, 1));
     geometry.setAttribute("aSize", new THREE.BufferAttribute(sizes, 1));
-    return { geometry, points: pts, colorsArr: colors };
+    return { geometry, points: pts, scatter: scatterPts, colorsArr: colors, randoms };
 }
 
-function buildLinks(points, colorsArr, maxDist, maxLinksPerNode) {
-    const positions = [];
-    const colors = [];
-
+// Decides which hubs are linked, based on their clustered (target) positions.
+// The topology stays fixed; only the rendered endpoint coordinates animate.
+function buildLinkTopology(points, maxDist, maxLinksPerNode) {
+    const pairs = [];
     for (let i = 0; i < points.length; i++) {
         let links = 0;
         for (let j = i + 1; j < points.length && links < maxLinksPerNode; j++) {
-            const d = points[i].distanceTo(points[j]);
-            if (d < maxDist) {
-                positions.push(points[i].x, points[i].y, points[i].z);
-                positions.push(points[j].x, points[j].y, points[j].z);
-                colors.push(colorsArr[i * 3], colorsArr[i * 3 + 1], colorsArr[i * 3 + 2]);
-                colors.push(colorsArr[j * 3], colorsArr[j * 3 + 1], colorsArr[j * 3 + 2]);
+            if (points[i].distanceTo(points[j]) < maxDist) {
+                pairs.push([i, j]);
                 links++;
             }
         }
     }
+    return pairs;
+}
+
+// Each link becomes a screen-space "fat line" quad (4 vertices / 2 triangles)
+// so its rendered width can be animated in the vertex shader.
+function buildLinkGeometry(hubData, pairs) {
+    const segCount = pairs.length;
+    const vertCount = segCount * 4;
+    const positions = new Float32Array(vertCount * 3); // unused by the shader, kept for geometry validity
+    const aStart = new Float32Array(vertCount * 3);
+    const aEnd = new Float32Array(vertCount * 3);
+    const aSide = new Float32Array(vertCount);
+    const aEndpoint = new Float32Array(vertCount);
+    const aColorStart = new Float32Array(vertCount * 3);
+    const aColorEnd = new Float32Array(vertCount * 3);
+    const aPhase = new Float32Array(vertCount);
+    const indices = new Uint16Array(segCount * 6);
+
+    const colors = hubData.colorsArr;
+    const sides = [-1, 1, -1, 1];
+    const endpoints = [0, 0, 1, 1];
+
+    for (let k = 0; k < segCount; k++) {
+        const [i, j] = pairs[k];
+        const base = k * 4;
+        const phase = Math.random() * Math.PI * 2;
+
+        for (let v = 0; v < 4; v++) {
+            const vi = base + v;
+            aSide[vi] = sides[v];
+            aEndpoint[vi] = endpoints[v];
+            aPhase[vi] = phase;
+
+            aColorStart[vi * 3] = colors[i * 3];
+            aColorStart[vi * 3 + 1] = colors[i * 3 + 1];
+            aColorStart[vi * 3 + 2] = colors[i * 3 + 2];
+
+            aColorEnd[vi * 3] = colors[j * 3];
+            aColorEnd[vi * 3 + 1] = colors[j * 3 + 1];
+            aColorEnd[vi * 3 + 2] = colors[j * 3 + 2];
+        }
+
+        const i6 = k * 6;
+        indices[i6] = base; indices[i6 + 1] = base + 1; indices[i6 + 2] = base + 2;
+        indices[i6 + 3] = base + 2; indices[i6 + 4] = base + 1; indices[i6 + 5] = base + 3;
+    }
 
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
-    geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(colors), 3));
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("aStart", new THREE.BufferAttribute(aStart, 3));
+    geometry.setAttribute("aEnd", new THREE.BufferAttribute(aEnd, 3));
+    geometry.setAttribute("aSide", new THREE.BufferAttribute(aSide, 1));
+    geometry.setAttribute("aEndpoint", new THREE.BufferAttribute(aEndpoint, 1));
+    geometry.setAttribute("aColorStart", new THREE.BufferAttribute(aColorStart, 3));
+    geometry.setAttribute("aColorEnd", new THREE.BufferAttribute(aColorEnd, 3));
+    geometry.setAttribute("aPhase", new THREE.BufferAttribute(aPhase, 1));
+    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
     return geometry;
 }
 
-const POINT_VERTEX_SHADER = `
-    attribute float aRandom;
-    attribute float aSize;
-    attribute vec3 aColor;
-    varying vec3 vColor;
-    uniform float uTime;
-    uniform float uPixelRatio;
-    void main() {
-        vColor = aColor;
-        vec3 pos = position;
-        pos.x += sin(uTime * 0.4 + aRandom * 6.2831) * 0.6;
-        pos.y += cos(uTime * 0.35 + aRandom * 6.2831) * 0.6;
-        pos.z += sin(uTime * 0.3 + aRandom * 3.14159) * 0.5;
-        vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-        float pulse = 0.8 + 0.35 * sin(uTime * 1.6 + aRandom * 6.2831);
-        gl_PointSize = aSize * pulse * uPixelRatio * (220.0 / -mvPosition.z);
-        gl_Position = projectionMatrix * mvPosition;
-    }
-`;
+function buildPointVertexShader(phase) {
+    return `
+        attribute float aRandom;
+        attribute float aSize;
+        attribute vec3 aColor;
+        attribute vec3 aScatter;
+        varying vec3 vColor;
+        uniform float uTime;
+        uniform float uPixelRatio;
+
+        const float FORM_CYCLE = ${FORM_CYCLE.toFixed(1)};
+        const float FORM_PHASE = ${phase.toFixed(3)};
+
+        void main() {
+            vColor = aColor;
+
+            float raw = 0.5 + 0.5 * sin(uTime * (6.2831853 / FORM_CYCLE) - 1.5707963 + FORM_PHASE);
+            float formProgress = smoothstep(0.0, 1.0, raw);
+            vec3 pos = mix(aScatter, position, formProgress);
+
+            pos.x += sin(uTime * 0.4 + aRandom * 6.2831) * 0.6;
+            pos.y += cos(uTime * 0.35 + aRandom * 6.2831) * 0.6;
+            pos.z += sin(uTime * 0.3 + aRandom * 3.14159) * 0.5;
+            vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+            float pulse = 0.8 + 0.35 * sin(uTime * 1.6 + aRandom * 6.2831);
+            gl_PointSize = aSize * pulse * uPixelRatio * (220.0 / -mvPosition.z);
+            gl_Position = projectionMatrix * mvPosition;
+        }
+    `;
+}
 
 const POINT_FRAGMENT_SHADER = `
     varying vec3 vColor;
@@ -209,18 +329,92 @@ const POINT_FRAGMENT_SHADER = `
     }
 `;
 
-function makePointMaterial() {
+function makePointMaterial(phase) {
     return new THREE.ShaderMaterial({
         uniforms: {
             uTime: { value: 0 },
             uPixelRatio: { value: Math.min(window.devicePixelRatio || 1, 2) },
         },
-        vertexShader: POINT_VERTEX_SHADER,
+        vertexShader: buildPointVertexShader(phase),
         fragmentShader: POINT_FRAGMENT_SHADER,
         transparent: true,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
-        vertexColors: false,
+    });
+}
+
+// Screen-space "fat line" technique (as used by three.js's own Line2/LineMaterial),
+// reimplemented directly here so a connection's on-screen width can be animated
+// per-segment — plain THREE.LineSegments always renders at ~1px regardless of
+// any linewidth setting.
+const LINK_VERTEX_SHADER = `
+    attribute vec3 aStart;
+    attribute vec3 aEnd;
+    attribute float aSide;
+    attribute float aEndpoint;
+    attribute vec3 aColorStart;
+    attribute vec3 aColorEnd;
+    attribute float aPhase;
+
+    uniform float uTime;
+    uniform vec2 uResolution;
+    uniform float uPixelRatio;
+
+    varying vec3 vColor;
+    varying float vPulse;
+    varying float vSide;
+
+    void main() {
+        vColor = mix(aColorStart, aColorEnd, aEndpoint);
+        vSide = aSide;
+
+        vec4 clipStart = projectionMatrix * modelViewMatrix * vec4(aStart, 1.0);
+        vec4 clipEnd = projectionMatrix * modelViewMatrix * vec4(aEnd, 1.0);
+
+        vec2 screenStart = clipStart.xy / clipStart.w * uResolution;
+        vec2 screenEnd = clipEnd.xy / clipEnd.w * uResolution;
+
+        vec2 dir = normalize(screenEnd - screenStart);
+        vec2 normal = vec2(-dir.y, dir.x);
+
+        // occasional sharp flare rather than a gentle wobble, phase-varied per link
+        float pulse = 0.3 + 0.7 * pow(max(0.0, sin(uTime * 0.6 + aPhase)), 4.0);
+        vPulse = pulse;
+
+        float widthPx = mix(1.0, 6.5, pulse) * uPixelRatio;
+
+        vec4 clip = mix(clipStart, clipEnd, aEndpoint);
+        vec2 offset = normal * (widthPx / uResolution) * aSide * clip.w;
+        clip.xy += offset;
+
+        gl_Position = clip;
+    }
+`;
+
+const LINK_FRAGMENT_SHADER = `
+    varying vec3 vColor;
+    varying float vPulse;
+    varying float vSide;
+    void main() {
+        float edge = smoothstep(1.0, 0.0, abs(vSide));
+        float alpha = (0.15 + 0.55 * vPulse) * edge;
+        gl_FragColor = vec4(vColor, alpha);
+    }
+`;
+
+function makeLinkMaterial(pixelRatio) {
+    return new THREE.ShaderMaterial({
+        uniforms: {
+            uTime: { value: 0 },
+            uResolution: { value: new THREE.Vector2(1, 1) },
+            uPixelRatio: { value: pixelRatio },
+        },
+        vertexShader: LINK_VERTEX_SHADER,
+        fragmentShader: LINK_FRAGMENT_SHADER,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
     });
 }
 
@@ -232,13 +426,15 @@ function EmbeddingField() {
         const scene = new THREE.Scene();
         scene.fog = new THREE.FogExp2(0x05010f, 0.012);
 
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+
         const camera = new THREE.PerspectiveCamera(
             55, window.innerWidth / window.innerHeight, 0.1, 500
         );
         camera.position.set(0, 0, 42);
 
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.setPixelRatio(pixelRatio);
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.setClearColor(0x05010f, 1);
         renderer.domElement.classList.add("embedding-canvas");
@@ -248,25 +444,48 @@ function EmbeddingField() {
         scene.add(group);
 
         const dustGeometry = buildDust(3200);
-        const dustMaterial = makePointMaterial();
+        const dustMaterial = makePointMaterial(DUST_PHASE);
         const dust = new THREE.Points(dustGeometry, dustMaterial);
+        dust.frustumCulled = false;
         group.add(dust);
 
         const hubData = buildHubs(70);
-        const hubMaterial = makePointMaterial();
+        const hubMaterial = makePointMaterial(HUB_PHASE);
         const hubs = new THREE.Points(hubData.geometry, hubMaterial);
+        hubs.frustumCulled = false;
         group.add(hubs);
 
-        const linkGeometry = buildLinks(hubData.points, hubData.colorsArr, 13, 4);
-        const linkMaterial = new THREE.LineBasicMaterial({
-            vertexColors: true,
-            transparent: true,
-            opacity: 0.22,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-        });
-        const links = new THREE.LineSegments(linkGeometry, linkMaterial);
+        const linkPairs = buildLinkTopology(hubData.points, 13, 4);
+        const linkGeometry = buildLinkGeometry(hubData, linkPairs);
+        const linkMaterial = makeLinkMaterial(pixelRatio);
+        const links = new THREE.Mesh(linkGeometry, linkMaterial);
+        links.frustumCulled = false;
         group.add(links);
+
+        // Recomputed every frame so the connections track each hub's current
+        // (scatter <-> cluster interpolated) position — see hubCurrentPosition().
+        const hubCurrent = hubData.points.map(() => new THREE.Vector3());
+        const startArray = linkGeometry.attributes.aStart.array;
+        const endArray = linkGeometry.attributes.aEnd.array;
+
+        const updateLinkPositions = (t) => {
+            for (let i = 0; i < hubData.points.length; i++) {
+                hubCurrentPosition(hubData, i, t, hubCurrent[i]);
+            }
+            for (let k = 0; k < linkPairs.length; k++) {
+                const [i, j] = linkPairs[k];
+                const p1 = hubCurrent[i];
+                const p2 = hubCurrent[j];
+                const base = k * 4;
+                for (let v = 0; v < 4; v++) {
+                    const vi = (base + v) * 3;
+                    startArray[vi] = p1.x; startArray[vi + 1] = p1.y; startArray[vi + 2] = p1.z;
+                    endArray[vi] = p2.x; endArray[vi + 1] = p2.y; endArray[vi + 2] = p2.z;
+                }
+            }
+            linkGeometry.attributes.aStart.needsUpdate = true;
+            linkGeometry.attributes.aEnd.needsUpdate = true;
+        };
 
         const pointer = { x: 0, y: 0 };
         const onPointerMove = (e) => {
@@ -279,7 +498,12 @@ function EmbeddingField() {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
+            linkMaterial.uniforms.uResolution.value.set(
+                window.innerWidth * pixelRatio,
+                window.innerHeight * pixelRatio
+            );
         };
+        onResize();
         window.addEventListener("resize", onResize);
 
         const clock = new THREE.Clock();
@@ -288,6 +512,8 @@ function EmbeddingField() {
             const t = clock.getElapsedTime();
             dustMaterial.uniforms.uTime.value = t;
             hubMaterial.uniforms.uTime.value = t;
+            linkMaterial.uniforms.uTime.value = t;
+            updateLinkPositions(t);
 
             group.rotation.y = t * 0.035;
             group.rotation.x = Math.sin(t * 0.08) * 0.06;
