@@ -1,5 +1,5 @@
 # Build stage
-FROM --platform=linux/amd64 python:3.11-slim-bullseye AS builder
+FROM --platform=linux/amd64 python:3.11-slim-bookworm AS builder
 
 # Add build argument for GitHub token
 ARG GITHUB_TOKEN
@@ -45,7 +45,7 @@ RUN pip --no-cache-dir --default-timeout=240 install -r airembr/sdk/requirements
 RUN pip list
 
 # Final stage - token is not carried over to this stage
-FROM --platform=linux/amd64 python:3.11-slim-bullseye
+FROM --platform=linux/amd64 python:3.11-slim-bookworm
 LABEL maintaner=admin@tracardi.com
 
 RUN pip install --upgrade pip
