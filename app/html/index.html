@@ -82,27 +82,35 @@ const CLUSTERS = [
     { center: new THREE.Vector3(0, 1, 6), color: new THREE.Color(0xffb066), spread: 16 },
 ];
 
-// Shared "forming" cycle: points drift between a diffuse scatter and their
-// clustered target position on this loop. Baked into the shaders as constants
-// (via template literals) and mirrored in JS (for the link endpoints below)
-// so everything stays in lockstep.
-const FORM_CYCLE = 26.0;
+// A second formation each cluster morphs into: same clusters (same color,
+// same spread/shape, same per-point jitter), just rigidly rotated + flipped
+// to a different arrangement in space, so every cluster stays tightly formed
+// throughout the morph instead of ever passing through a diffuse/random state.
+const CLUSTER_B_ROTATION = (137 * Math.PI) / 180;
+function rotateClusterCenterB(center) {
+    const cosA = Math.cos(CLUSTER_B_ROTATION);
+    const sinA = Math.sin(CLUSTER_B_ROTATION);
+    return new THREE.Vector3(
+        center.x * cosA - center.z * sinA,
+        -center.y,
+        center.x * sinA + center.z * cosA
+    );
+}
+const CLUSTER_CENTERS_B = CLUSTERS.map((c) => rotateClusterCenterB(c.center));
+
+// Shared "morphing" schedule: hold formation A, morph to formation B over
+// TRANSITION_SECONDS, hold B, morph back — then repeat. Baked into the shaders
+// as constants (via template literals) and mirrored in JS (for the link
+// endpoints below) so everything stays in lockstep.
+const HOLD_SECONDS = 60.0;
+const TRANSITION_SECONDS = 8.0;
+const FORM_CYCLE = 2 * (HOLD_SECONDS + TRANSITION_SECONDS);
 const DUST_PHASE = 0.0;
-const HUB_PHASE = 0.6;
+const HUB_PHASE = 4.0;
 
 function gaussianJitter(spread) {
     // sum of uniforms approximates a normal distribution, cheap and dependency-free
     return (Math.random() + Math.random() + Math.random() - 1.5) / 1.5 * spread;
-}
-
-function randomScatterPosition() {
-    // Roughly matches the combined bounding extent of all clusters, so the
-    // "unformed" state reads as a diffuse field filling the same volume.
-    return new THREE.Vector3(
-        (Math.random() * 2 - 1) * 28,
-        (Math.random() * 2 - 1) * 22,
-        (Math.random() * 2 - 1) * 19
-    );
 }
 
 function smoothstep01(x) {
@@ -111,18 +119,27 @@ function smoothstep01(x) {
 }
 
 function formProgress(t, phase) {
-    const raw = 0.5 + 0.5 * Math.sin(t * (2 * Math.PI / FORM_CYCLE) - Math.PI / 2 + phase);
-    return smoothstep01(raw);
+    const local = ((t + phase) % FORM_CYCLE + FORM_CYCLE) % FORM_CYCLE;
+    if (local < HOLD_SECONDS) {
+        return 1; // holding formation A
+    }
+    if (local < HOLD_SECONDS + TRANSITION_SECONDS) {
+        return 1 - smoothstep01((local - HOLD_SECONDS) / TRANSITION_SECONDS);
+    }
+    if (local < HOLD_SECONDS * 2 + TRANSITION_SECONDS) {
+        return 0; // holding formation B
+    }
+    return smoothstep01((local - (HOLD_SECONDS * 2 + TRANSITION_SECONDS)) / TRANSITION_SECONDS);
 }
 
 function hubCurrentPosition(hubData, i, t, out) {
     const progress = formProgress(t, HUB_PHASE);
-    const scatterPos = hubData.scatter[i];
+    const clusterBPos = hubData.clusterB[i];
     const clusterPos = hubData.points[i];
     const rnd = hubData.randoms[i];
-    out.x = scatterPos.x + (clusterPos.x - scatterPos.x) * progress;
-    out.y = scatterPos.y + (clusterPos.y - scatterPos.y) * progress;
-    out.z = scatterPos.z + (clusterPos.z - scatterPos.z) * progress;
+    out.x = clusterBPos.x + (clusterPos.x - clusterBPos.x) * progress;
+    out.y = clusterBPos.y + (clusterPos.y - clusterBPos.y) * progress;
+    out.z = clusterBPos.z + (clusterPos.z - clusterBPos.z) * progress;
     // mirrors the shimmer term in buildPointVertexShader() so the hub dots
     // (rendered on the GPU) and the link endpoints (computed here) match.
     out.x += Math.sin(t * 0.4 + rnd * Math.PI * 2) * 0.6;
@@ -133,25 +150,28 @@ function hubCurrentPosition(hubData, i, t, out) {
 
 function buildDust(count) {
     const positions = new Float32Array(count * 3);
-    const scatter = new Float32Array(count * 3);
+    const clusterB = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const randoms = new Float32Array(count);
     const sizes = new Float32Array(count);
 
     for (let i = 0; i < count; i++) {
-        const cluster = CLUSTERS[(Math.random() * CLUSTERS.length) | 0];
-        const x = cluster.center.x + gaussianJitter(cluster.spread);
-        const y = cluster.center.y + gaussianJitter(cluster.spread);
-        const z = cluster.center.z + gaussianJitter(cluster.spread * 0.8);
+        const ci = (Math.random() * CLUSTERS.length) | 0;
+        const cluster = CLUSTERS[ci];
+        const dx = gaussianJitter(cluster.spread);
+        const dy = gaussianJitter(cluster.spread);
+        const dz = gaussianJitter(cluster.spread * 0.8);
 
-        positions[i * 3] = x;
-        positions[i * 3 + 1] = y;
-        positions[i * 3 + 2] = z;
+        positions[i * 3] = cluster.center.x + dx;
+        positions[i * 3 + 1] = cluster.center.y + dy;
+        positions[i * 3 + 2] = cluster.center.z + dz;
 
-        const scatterPos = randomScatterPosition();
-        scatter[i * 3] = scatterPos.x;
-        scatter[i * 3 + 1] = scatterPos.y;
-        scatter[i * 3 + 2] = scatterPos.z;
+        // same relative jitter applied to the B-formation center, so this
+        // cluster rigidly relocates/rotates rather than re-randomizing.
+        const centerB = CLUSTER_CENTERS_B[ci];
+        clusterB[i * 3] = centerB.x + dx;
+        clusterB[i * 3 + 1] = centerB.y + dy;
+        clusterB[i * 3 + 2] = centerB.z + dz;
 
         const shimmer = 0.75 + Math.random() * 0.5;
         colors[i * 3] = cluster.color.r * shimmer;
@@ -164,7 +184,7 @@ function buildDust(count) {
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute("aScatter", new THREE.BufferAttribute(scatter, 3));
+    geometry.setAttribute("aClusterB", new THREE.BufferAttribute(clusterB, 3));
     geometry.setAttribute("aColor", new THREE.BufferAttribute(colors, 3));
     geometry.setAttribute("aRandom", new THREE.BufferAttribute(randoms, 1));
     geometry.setAttribute("aSize", new THREE.BufferAttribute(sizes, 1));
@@ -173,29 +193,34 @@ function buildDust(count) {
 
 function buildHubs(count) {
     const positions = new Float32Array(count * 3);
-    const scatter = new Float32Array(count * 3);
+    const clusterB = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const randoms = new Float32Array(count);
     const sizes = new Float32Array(count);
     const pts = [];
-    const scatterPts = [];
+    const clusterBPts = [];
 
     for (let i = 0; i < count; i++) {
-        const cluster = CLUSTERS[(Math.random() * CLUSTERS.length) | 0];
-        const x = cluster.center.x + gaussianJitter(cluster.spread * 0.7);
-        const y = cluster.center.y + gaussianJitter(cluster.spread * 0.7);
-        const z = cluster.center.z + gaussianJitter(cluster.spread * 0.6);
+        const ci = (Math.random() * CLUSTERS.length) | 0;
+        const cluster = CLUSTERS[ci];
+        const dx = gaussianJitter(cluster.spread * 0.7);
+        const dy = gaussianJitter(cluster.spread * 0.7);
+        const dz = gaussianJitter(cluster.spread * 0.6);
+        const x = cluster.center.x + dx;
+        const y = cluster.center.y + dy;
+        const z = cluster.center.z + dz;
         pts.push(new THREE.Vector3(x, y, z));
 
         positions[i * 3] = x;
         positions[i * 3 + 1] = y;
         positions[i * 3 + 2] = z;
 
-        const scatterPos = randomScatterPosition();
-        scatterPts.push(scatterPos);
-        scatter[i * 3] = scatterPos.x;
-        scatter[i * 3 + 1] = scatterPos.y;
-        scatter[i * 3 + 2] = scatterPos.z;
+        const centerB = CLUSTER_CENTERS_B[ci];
+        const bPos = new THREE.Vector3(centerB.x + dx, centerB.y + dy, centerB.z + dz);
+        clusterBPts.push(bPos);
+        clusterB[i * 3] = bPos.x;
+        clusterB[i * 3 + 1] = bPos.y;
+        clusterB[i * 3 + 2] = bPos.z;
 
         colors[i * 3] = cluster.color.r;
         colors[i * 3 + 1] = cluster.color.g;
@@ -207,11 +232,11 @@ function buildHubs(count) {
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute("aScatter", new THREE.BufferAttribute(scatter, 3));
+    geometry.setAttribute("aClusterB", new THREE.BufferAttribute(clusterB, 3));
     geometry.setAttribute("aColor", new THREE.BufferAttribute(colors, 3));
     geometry.setAttribute("aRandom", new THREE.BufferAttribute(randoms, 1));
     geometry.setAttribute("aSize", new THREE.BufferAttribute(sizes, 1));
-    return { geometry, points: pts, scatter: scatterPts, colorsArr: colors, randoms };
+    return { geometry, points: pts, clusterB: clusterBPts, colorsArr: colors, randoms };
 }
 
 // Decides which hubs are linked, based on their clustered (target) positions.
@@ -292,20 +317,31 @@ function buildPointVertexShader(phase) {
         attribute float aRandom;
         attribute float aSize;
         attribute vec3 aColor;
-        attribute vec3 aScatter;
+        attribute vec3 aClusterB;
         varying vec3 vColor;
         uniform float uTime;
         uniform float uPixelRatio;
 
+        const float HOLD = ${HOLD_SECONDS.toFixed(1)};
+        const float TRANS = ${TRANSITION_SECONDS.toFixed(1)};
         const float FORM_CYCLE = ${FORM_CYCLE.toFixed(1)};
         const float FORM_PHASE = ${phase.toFixed(3)};
 
         void main() {
             vColor = aColor;
 
-            float raw = 0.5 + 0.5 * sin(uTime * (6.2831853 / FORM_CYCLE) - 1.5707963 + FORM_PHASE);
-            float formProgress = smoothstep(0.0, 1.0, raw);
-            vec3 pos = mix(aScatter, position, formProgress);
+            float local = mod(uTime + FORM_PHASE, FORM_CYCLE);
+            float formProgress;
+            if (local < HOLD) {
+                formProgress = 1.0;
+            } else if (local < HOLD + TRANS) {
+                formProgress = 1.0 - smoothstep(0.0, 1.0, (local - HOLD) / TRANS);
+            } else if (local < HOLD * 2.0 + TRANS) {
+                formProgress = 0.0;
+            } else {
+                formProgress = smoothstep(0.0, 1.0, (local - (HOLD * 2.0 + TRANS)) / TRANS);
+            }
+            vec3 pos = mix(aClusterB, position, formProgress);
 
             pos.x += sin(uTime * 0.4 + aRandom * 6.2831) * 0.6;
             pos.y += cos(uTime * 0.35 + aRandom * 6.2831) * 0.6;
@@ -463,7 +499,7 @@ function EmbeddingField() {
         group.add(links);
 
         // Recomputed every frame so the connections track each hub's current
-        // (scatter <-> cluster interpolated) position — see hubCurrentPosition().
+        // (formation A <-> formation B interpolated) position — see hubCurrentPosition().
         const hubCurrent = hubData.points.map(() => new THREE.Vector3());
         const startArray = linkGeometry.attributes.aStart.array;
         const endArray = linkGeometry.attributes.aEnd.array;
